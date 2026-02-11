@@ -1,11 +1,25 @@
+import os
 from fastapi import FastAPI, Depends, HTTPException
 from typing import List, Optional
 from sqlmodel import SQLModel, Field, Session, select, create_engine
 from fastapi.middleware.cors import CORSMiddleware
+from dotenv import load_dotenv
 
-# Database Setup
-sqlite_url = "sqlite:///database.db"
-engine = create_engine(sqlite_url, connect_args={"check_same_thread": False})
+# .env file se data load karne ke liye
+load_dotenv()
+
+# Database Setup - Online (PostgreSQL) ya Local (SQLite)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+# Agar DATABASE_URL na mile to local database ban jaye (sirf testing ke liye)
+if not DATABASE_URL:
+    DATABASE_URL = "sqlite:///database.db"
+
+# PostgreSQL ke liye sslmode zaroori hota hai online platforms par
+if DATABASE_URL.startswith("postgresql"):
+    engine = create_engine(DATABASE_URL, echo=True)
+else:
+    engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 
 class Task(SQLModel, table=True):
     id: Optional[int] = Field(default=None, primary_key=True)
@@ -34,12 +48,11 @@ def get_session():
 
 app = FastAPI()
 
-# --- VERY IMPORTANT: CORS FIX ---
-# Is section ko dhyan se copy kijye ga
+# CORS FIX: Isse Vercel aur Render ke darmiyan masla nahi hoga
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=False, # Isay False rakhna baaz dafa network errors khatam kerdeta hai
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -60,8 +73,9 @@ async def signup(data: AuthData, session: Session = Depends(get_session)):
         session.commit()
         session.refresh(user)
         return {"access_token": f"token_{user.id}", "user_id": user.id}
-    except:
-        raise HTTPException(status_code=400, detail="User already exists")
+    except Exception as e:
+        session.rollback()
+        raise HTTPException(status_code=400, detail="User already exists or DB error")
 
 @app.post("/auth/login")
 async def login(data: AuthData, session: Session = Depends(get_session)):
@@ -74,7 +88,6 @@ async def list_tasks(user_id: int, session: Session = Depends(get_session)):
     statement = select(Task).where(Task.user_id == user_id).order_by(Task.is_important.desc())
     return session.exec(statement).all()
 
-# Is function ko update kiya hai taakay koi data error na aaye
 @app.post("/api/{user_id}/tasks")
 async def create_task(user_id: int, task_data: dict, session: Session = Depends(get_session)):
     new_task = Task(
